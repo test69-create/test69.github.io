@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<!--
+  포화수증기량 곡선 시뮬레이션 — 공기 덩어리 상승과 구름 생성
+  · 단일 .html · 외부 라이브러리 없음
+  · 탐구: 공기 덩어리가 상승하면 왜 구름이 생길까?
+  · x축 = 온도(℃), y축 = 포화수증기량(g/m³)
+  · 포화수증기량 근사식: Magnus 식 기반 (교과서 표값과 일치)
+-->
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>포화수증기량 곡선과 구름 생성</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0;}
+  body{font-family:system-ui,"Malgun Gothic",sans-serif;background:#eef4fb;color:#2b3a4a;
+       min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:22px;}
+  h1{font-size:1.45rem;color:#2f5d8a;margin-bottom:4px;text-align:center;}
+  .q{color:#6b7e93;font-size:.96rem;margin-bottom:16px;text-align:center;}
+  .stage{display:flex;gap:18px;flex-wrap:wrap;justify-content:center;width:100%;max-width:860px;}
+  .card{background:#fff;border:1px solid #d9e3ef;border-radius:16px;padding:16px;
+        box-shadow:0 6px 18px rgba(90,120,160,.10);}
+  canvas{display:block;}
+  .sky-wrap{width:210px;}
+  .sky{position:relative;width:178px;height:280px;border-radius:12px;overflow:hidden;
+       background:linear-gradient(#bcd9f5,#e9f3ff);margin:0 auto;border:1px solid #cfe0f2;}
+  .parcel{position:absolute;left:50%;width:54px;height:40px;margin-left:-27px;border-radius:50%;
+          background:rgba(255,255,255,.55);border:1.5px dashed #7fa8d4;
+          display:flex;align-items:center;justify-content:center;font-size:.7rem;color:#3b6390;
+          transition:bottom .25s, background .25s;}
+  .cloud{position:absolute;left:50%;margin-left:-40px;width:80px;height:34px;border-radius:20px;
+         background:#fff;opacity:0;transition:opacity .4s;box-shadow:18px 6px 0 -6px #fff,-18px 6px 0 -4px #fff;}
+  .ctrl{margin-top:14px;width:100%;max-width:840px;}
+  .ctrl label{font-size:.92rem;color:#445;display:block;margin-bottom:6px;}
+  input[type=range]{width:100%;}
+  .reset{margin-top:10px;background:#fff;border:1px solid #cfe0f2;color:#2f5d8a;border-radius:10px;
+         padding:8px 14px;font-size:.9rem;font-weight:700;cursor:pointer;}
+  .readout{display:flex;gap:10px;flex-wrap:wrap;justify-content:center;margin-top:14px;}
+  .stat{background:#fff;border:1px solid #d9e3ef;border-radius:12px;padding:10px 14px;text-align:center;min-width:104px;}
+  .stat .lab{font-size:.72rem;color:#8295a8;}
+  .stat .num{font-size:1.15rem;font-weight:700;color:#2f5d8a;font-variant-numeric:tabular-nums;}
+  .state{margin-top:12px;font-size:1.05rem;font-weight:700;text-align:center;min-height:1.4em;}
+  .clear{color:#3a9d6a;} .cond{color:#c75b3a;}
+  footer{margin-top:16px;color:#9bb0c4;font-size:.8rem;}
+</style>
+</head>
+<body>
+  <h1>☁️ 공기 덩어리가 상승하면 왜 구름이 생길까?</h1>
+  <p class="q">🤔 슬라이더로 공기 덩어리를 상승시켜 보세요. 기온·포화수증기량·상대습도가 어떻게 변하는지 관찰해요.</p>
+
+  <div class="stage">
+    <div class="card sky-wrap">
+      <div class="sky">
+        <div class="cloud" id="cloud"></div>
+        <div class="parcel" id="parcel">공기</div>
+      </div>
+      <div style="text-align:center;color:#6b7e93;font-size:.8rem;margin-top:8px">공기 덩어리</div>
+    </div>
+    <div class="card">
+      <canvas id="graph" width="520" height="300"></canvas>
+    </div>
+  </div>
+
+  <div class="ctrl">
+    <label>공기 덩어리 상승 고도 : <b id="altLab">0</b> m</label>
+    <input type="range" id="alt" min="0" max="2500" step="25" value="0">
+    <button class="reset" id="reset">처음으로</button>
+  </div>
+
+  <div class="readout">
+    <div class="stat"><div class="lab">기온</div><div class="num"><span id="tempV">30</span>℃</div></div>
+    <div class="stat"><div class="lab">포화수증기량</div><div class="num"><span id="satV">30.4</span></div></div>
+    <div class="stat"><div class="lab">실제 수증기량</div><div class="num"><span id="actV">17.3</span></div></div>
+    <div class="stat"><div class="lab">상대습도</div><div class="num"><span id="rhV">57</span>%</div></div>
+  </div>
+  <div class="state clear" id="state">맑음 — 아직 포화에 도달하지 않았어요.</div>
+  <footer>탐구 아카이브 · GitHub Pages · 단위 g/m³</footer>
+
+<script>
+  // ---- 포화수증기량(g/m³): Magnus 식 → 절대습도 환산 ----
+  function satAmount(T){
+    var es = 6.112 * Math.exp(17.67 * T / (T + 243.5)); // 포화수증기압(hPa)
+    return 216.7 * es / (T + 273.15);                   // g/m³
+  }
+
+  var GROUND_T = 30;            // 지표면 기온(℃)
+  var LAPSE = 1.0;             // 건조단열감률 1℃ / 100m
+  var DEW = 20;               // 이슬점(℃) → 실제 수증기량 = 이 온도의 포화량
+  var ACTUAL = satAmount(DEW); // 실제(현재) 수증기량, 상승 중 일정 (≈17.27)
+
+  var cv = document.getElementById('graph');
+  var ctx = cv.getContext('2d');
+  var altEl = document.getElementById('alt');
+
+  // 그래프 좌표계
+  var Tmin = -5, Tmax = 40, Ymin = 0, Ymax = 55;
+  var padL = 50, padR = 18, padT = 16, padB = 38;
+
+  function X(T){ return padL + (T - Tmin)/(Tmax - Tmin) * (cv.width - padL - padR); }
+  function Y(v){ return (cv.height - padB) - (v - Ymin)/(Ymax - Ymin) * (cv.height - padT - padB); }
+
+  function draw(T){
+    var W = cv.width, Hc = cv.height;
+    ctx.clearRect(0,0,W,Hc);
+
+    // 격자 + 축
+    ctx.strokeStyle = '#eef2f7'; ctx.lineWidth = 1;
+    ctx.fillStyle = '#9bb0c4'; ctx.font = '11px sans-serif';
+    ctx.textAlign = 'right';
+    for(var v=0; v<=Ymax; v+=10){
+      ctx.beginPath(); ctx.moveTo(padL, Y(v)); ctx.lineTo(W-padR, Y(v)); ctx.stroke();
+      ctx.fillText(v.toString(), padL-6, Y(v)+4);
+    }
+    ctx.textAlign = 'center';
+    for(var tt=0; tt<=Tmax; tt+=10){
+      ctx.beginPath(); ctx.moveTo(X(tt), padT); ctx.lineTo(X(tt), Hc-padB); ctx.stroke();
+      ctx.fillText(tt+'℃', X(tt), Hc-padB+15);
+    }
+    ctx.strokeStyle = '#9fb6cd'; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(padL,padT); ctx.lineTo(padL,Hc-padB); ctx.lineTo(W-padR,Hc-padB); ctx.stroke();
+
+    // 축 라벨
+    ctx.fillStyle = '#5a7088'; ctx.font = '12px sans-serif';
+    ctx.textAlign='center'; ctx.fillText('온도 (℃)', (padL+W-padR)/2, Hc-6);
+    ctx.save(); ctx.translate(13,(padT+Hc-padB)/2); ctx.rotate(-Math.PI/2);
+    ctx.fillText('포화수증기량 (g/m³)',0,0); ctx.restore();
+
+    // 실제 수증기량 수평선
+    ctx.strokeStyle = '#7fa8d4'; ctx.setLineDash([6,4]); ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(padL, Y(ACTUAL)); ctx.lineTo(W-padR, Y(ACTUAL)); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = '#5b86b3'; ctx.textAlign='left'; ctx.font='11px sans-serif';
+    ctx.fillText('실제 수증기량', padL+6, Y(ACTUAL)-6);
+
+    // 포화수증기량 곡선
+    ctx.strokeStyle = '#2f5d8a'; ctx.lineWidth = 2.5; ctx.beginPath();
+    var first = true;
+    for(var Td=Tmin; Td<=Tmax; Td+=0.5){
+      var s = satAmount(Td);
+      if(first){ ctx.moveTo(X(Td), Y(s)); first=false; } else ctx.lineTo(X(Td), Y(s));
+    }
+    ctx.stroke();
+    ctx.fillStyle='#2f5d8a'; ctx.textAlign='right';
+    ctx.fillText('포화수증기량 곡선', W-padR-6, Y(satAmount(Tmax))-8);
+
+    // 이슬점 표시
+    ctx.fillStyle = '#9c7bbf';
+    ctx.beginPath(); ctx.arc(X(DEW), Y(ACTUAL), 4, 0, Math.PI*2); ctx.fill();
+    ctx.textAlign='center'; ctx.fillText('이슬점 '+DEW+'℃', X(DEW), Y(ACTUAL)+18);
+
+    // 현재 상태 점 (현재 기온에서의 포화수증기량)
+    var satNow = satAmount(T);
+    ctx.fillStyle = '#c75b3a';
+    ctx.beginPath(); ctx.arc(X(T), Y(satNow), 6, 0, Math.PI*2); ctx.fill();
+    ctx.strokeStyle = '#c75b3a'; ctx.lineWidth=1; ctx.setLineDash([3,3]);
+    ctx.beginPath(); ctx.moveTo(X(T), Hc-padB); ctx.lineTo(X(T), Y(satNow)); ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  function update(){
+    var alt = parseFloat(altEl.value);
+    var T = GROUND_T - LAPSE * alt/100;
+    var satNow = satAmount(T);
+    var condensing = ACTUAL > satNow;           // 실제 > 포화 → 응결
+    var rh = Math.min(ACTUAL / satNow * 100, 100);
+
+    document.getElementById('altLab').textContent = alt.toFixed(0);
+    document.getElementById('tempV').textContent = T.toFixed(1);
+    document.getElementById('satV').textContent = satNow.toFixed(1);
+    document.getElementById('actV').textContent = ACTUAL.toFixed(1);
+    document.getElementById('rhV').textContent = rh.toFixed(0);
+
+    // 공기 덩어리 위치/색
+    var parcel = document.getElementById('parcel');
+    var frac = alt/2500;
+    parcel.style.bottom = (10 + frac*220) + 'px';
+    parcel.style.background = condensing ? 'rgba(255,255,255,.95)' : 'rgba(255,255,255,.55)';
+    document.getElementById('cloud').style.bottom = (10 + frac*220 + 6) + 'px';
+    document.getElementById('cloud').style.opacity = condensing ? '1' : '0';
+
+    var state = document.getElementById('state');
+    if(condensing){
+      var excess = (ACTUAL - satNow).toFixed(1);
+      state.className = 'state cond';
+      state.innerHTML = '응결 발생 — 구름이 생겨요! ☁️ 넘친 수증기 약 '+excess+' g/m³가 물방울로. (기온이 이슬점 '+DEW+'℃ 아래로 내려감)';
+    } else {
+      state.className = 'state clear';
+      state.textContent = '맑음 — 상대습도 ' + rh.toFixed(0) + '%. 더 상승시키면 어떻게 될까요?';
+    }
+    draw(T);
+  }
+
+  altEl.addEventListener('input', update);
+  document.getElementById('reset').addEventListener('click', function(){ altEl.value = 0; update(); });
+  update();
+</script>
+</body>
+</html>

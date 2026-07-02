@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<!--
+  자유낙하 시뮬레이션 — 시간-속력 그래프
+  · 단일 .html · 외부 라이브러리 없음 · 더블클릭/ GitHub Pages 모두 작동
+  · 탐구: 자유낙하에서 속력은 시간에 따라 어떻게 변할까?
+-->
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>자유낙하 시간-속력 그래프</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0;}
+  body{font-family:system-ui,"Malgun Gothic",sans-serif;background:#0f1830;color:#eaf0ff;
+       min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:22px;}
+  h1{font-size:1.5rem;margin-bottom:4px;text-align:center;}
+  .q{color:#9fb3e6;font-size:.98rem;margin-bottom:18px;text-align:center;}
+  .controls{display:flex;gap:10px;flex-wrap:wrap;justify-content:center;margin-bottom:16px;}
+  .controls span{align-self:center;color:#9fb3e6;font-size:.9rem;margin-right:4px;}
+  button{border:none;border-radius:10px;padding:10px 16px;font-size:.95rem;font-weight:700;cursor:pointer;
+         background:#23314f;color:#cdd9f5;transition:transform .1s;}
+  button:hover{transform:translateY(-1px);}
+  button.sel{background:#5b8cff;color:#0f1830;}
+  button.go{background:#5b8cff;color:#0f1830;}
+  button.reset{background:transparent;border:1px solid #3a4a73;color:#9fb3e6;}
+  .stage{display:flex;gap:18px;flex-wrap:wrap;justify-content:center;width:100%;max-width:780px;}
+  .panel{background:#16203c;border:1px solid #2a3a63;border-radius:14px;padding:16px;}
+  .tower-wrap{width:150px;display:flex;flex-direction:column;align-items:center;}
+  .tower{position:relative;width:80px;height:300px;background:linear-gradient(#1b2746,#16203c);
+         border:1px solid #2a3a63;border-radius:8px;overflow:hidden;}
+  .ground{position:absolute;bottom:0;left:0;width:100%;height:8px;background:#3a4a73;}
+  .ball{position:absolute;left:50%;top:0;width:24px;height:24px;margin-left:-12px;border-radius:50%;
+        background:radial-gradient(circle at 35% 30%,#ffd36a,#e8930f);box-shadow:0 0 12px rgba(255,180,60,.5);}
+  canvas{background:#0c1326;border-radius:10px;}
+  .readout{display:flex;gap:18px;flex-wrap:wrap;justify-content:center;margin-top:14px;font-size:.95rem;}
+  .readout b{color:#ffd36a;font-variant-numeric:tabular-nums;}
+  .msg{margin-top:12px;min-height:1.4em;font-size:1rem;font-weight:600;color:#8fe3b0;text-align:center;}
+  footer{margin-top:18px;color:#5a6a96;font-size:.8rem;}
+</style>
+</head>
+<body>
+  <h1>🪂 자유낙하 — 시간-속력 그래프</h1>
+  <p class="q">🤔 자유낙하에서 속력은 시간에 따라 어떻게 변할까? (공기 저항은 무시)</p>
+
+  <div class="controls">
+    <span>중력</span>
+    <button class="grav sel" data-g="9.8">지구 9.8</button>
+    <button class="grav" data-g="1.6">달 1.6</button>
+    <button class="grav" data-g="3.7">화성 3.7</button>
+    <button class="go" id="start">시작 ▶</button>
+    <button class="reset" id="reset">다시</button>
+  </div>
+
+  <div class="stage">
+    <div class="panel tower-wrap">
+      <div class="tower"><div class="ball" id="ball"></div><div class="ground"></div></div>
+      <div style="color:#9fb3e6;font-size:.8rem;margin-top:8px">낙하 높이 45 m</div>
+    </div>
+    <div class="panel">
+      <canvas id="graph" width="440" height="300"></canvas>
+    </div>
+  </div>
+
+  <div class="readout">
+    <div>시간 <b id="tVal">0.00</b> s</div>
+    <div>속력 <b id="vVal">0.0</b> m/s</div>
+    <div>낙하 거리 <b id="yVal">0.0</b> m</div>
+  </div>
+  <div class="msg" id="msg">중력을 고르고 ‘시작’을 눌러 보세요.</div>
+  <footer>탐구 아카이브 · GitHub Pages</footer>
+
+<script>
+  var H_FALL = 45;           // 낙하 높이(m)
+  var g = 9.8;               // 중력가속도
+  var running = false, landed = false;
+  var t = 0, lastTs = null;
+  var samples = [];          // {t, v}
+  var t_end = 0, v_max = 0;
+
+  var ball = document.getElementById('ball');
+  var cv = document.getElementById('graph');
+  var ctx = cv.getContext('2d');
+  var tVal = document.getElementById('tVal');
+  var vVal = document.getElementById('vVal');
+  var yVal = document.getElementById('yVal');
+  var msg = document.getElementById('msg');
+
+  function computeBounds(){
+    t_end = Math.sqrt(2 * H_FALL / g);   // 착지 시간
+    v_max = g * t_end;                   // 도달 속력
+  }
+
+  function drawGraph(){
+    var W = cv.width, Hc = cv.height;
+    var padL = 52, padR = 16, padT = 16, padB = 40;
+    ctx.clearRect(0,0,W,Hc);
+    // 축
+    ctx.strokeStyle = '#3a4a73'; ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(padL, padT); ctx.lineTo(padL, Hc-padB); ctx.lineTo(W-padR, Hc-padB);
+    ctx.stroke();
+    // 라벨
+    ctx.fillStyle = '#9fb3e6'; ctx.font = '12px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('시간 (s)', (padL + W - padR)/2, Hc-10);
+    ctx.save();
+    ctx.translate(14, (padT + Hc-padB)/2); ctx.rotate(-Math.PI/2);
+    ctx.fillText('속력 (m/s)', 0, 0); ctx.restore();
+    // 눈금
+    ctx.fillStyle = '#6b7aa3'; ctx.textAlign = 'right';
+    for(var i=0;i<=4;i++){
+      var vy = v_max * i/4;
+      var py = (Hc-padB) - (vy/v_max)*(Hc-padT-padB);
+      ctx.fillText(vy.toFixed(0), padL-6, py+4);
+      ctx.strokeStyle = '#1d2949'; ctx.beginPath();
+      ctx.moveTo(padL, py); ctx.lineTo(W-padR, py); ctx.stroke();
+    }
+    ctx.textAlign = 'center';
+    for(var j=0;j<=4;j++){
+      var tx = t_end * j/4;
+      var px = padL + (tx/t_end)*(W-padL-padR);
+      ctx.fillText(tx.toFixed(1), px, Hc-padB+16);
+    }
+    // 데이터 선
+    if(samples.length > 1){
+      ctx.strokeStyle = '#5b8cff'; ctx.lineWidth = 3;
+      ctx.beginPath();
+      for(var k=0;k<samples.length;k++){
+        var s = samples[k];
+        var x = padL + (s.t/t_end)*(W-padL-padR);
+        var y = (Hc-padB) - (s.v/v_max)*(Hc-padT-padB);
+        if(k===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+      }
+      ctx.stroke();
+      // 현재 점
+      var last = samples[samples.length-1];
+      var lx = padL + (last.t/t_end)*(W-padL-padR);
+      var ly = (Hc-padB) - (last.v/v_max)*(Hc-padT-padB);
+      ctx.fillStyle = '#ffd36a'; ctx.beginPath();
+      ctx.arc(lx, ly, 5, 0, Math.PI*2); ctx.fill();
+    }
+  }
+
+  function reset(){
+    running = false; landed = false; t = 0; lastTs = null; samples = [];
+    computeBounds();
+    ball.style.top = '0px';
+    tVal.textContent = '0.00'; vVal.textContent = '0.0'; yVal.textContent = '0.0';
+    msg.textContent = '중력을 고르고 ‘시작’을 눌러 보세요.';
+    msg.style.color = '#8fe3b0';
+    drawGraph();
+  }
+
+  function frame(ts){
+    if(!running) return;
+    if(lastTs === null) lastTs = ts;
+    var dt = (ts - lastTs)/1000; lastTs = ts;
+    if(dt > 0.05) dt = 0.05;       // 큰 점프 방지
+    t += dt;
+
+    var y = 0.5 * g * t * t;       // 낙하 거리
+    var v = g * t;                 // 속력
+    if(y >= H_FALL){               // 착지
+      y = H_FALL; v = g * t_end; t = t_end; running = false; landed = true;
+    }
+    samples.push({t: Math.min(t, t_end), v: Math.min(v, v_max)});
+
+    var towerPx = 300 - 24 - 8;    // 탑 높이 - 공 - 바닥
+    ball.style.top = (y / H_FALL) * towerPx + 'px';
+    tVal.textContent = t.toFixed(2);
+    vVal.textContent = v.toFixed(1);
+    yVal.textContent = y.toFixed(1);
+    drawGraph();
+
+    if(landed){
+      msg.innerHTML = '착지! 낙하 시간 <b style="color:#ffd36a">'+t_end.toFixed(2)+' s</b>, 도달 속력 <b style="color:#ffd36a">'+v_max.toFixed(1)+' m/s</b> · 그래프가 <b style="color:#ffd36a">직선</b> → 속력이 일정하게 증가(등가속도)!';
+      return;
+    }
+    requestAnimationFrame(frame);
+  }
+
+  function start(){
+    if(running) return;
+    reset();
+    running = true; landed = false;
+    msg.textContent = '낙하 중…';
+    requestAnimationFrame(frame);
+  }
+
+  // 중력 선택
+  document.querySelectorAll('.grav').forEach(function(btn){
+    btn.addEventListener('click', function(){
+      document.querySelectorAll('.grav').forEach(function(b){ b.classList.remove('sel'); });
+      btn.classList.add('sel');
+      g = parseFloat(btn.dataset.g);
+      reset();
+    });
+  });
+  document.getElementById('start').addEventListener('click', start);
+  document.getElementById('reset').addEventListener('click', reset);
+
+  reset();
+</script>
+</body>
+</html>
